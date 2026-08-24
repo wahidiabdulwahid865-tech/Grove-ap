@@ -155,4 +155,164 @@ function HabitCard({ habit, onToggleToday, onDelete }) {
           )}
         </div>
         <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1.5">
-          <span className="flex items-center gap-1 text-[11px]" style={{ color: streak > 0 ? accent : COLORS.textMuted, fontFamily: "'IBM Plex Mono',monospace" }}>
+          <span className="flex items-center gap-1 text-[11px]" style={{ color: streak > 0 ? accent : COLORS.textMuted, fontFamily: "'IBM Plex Mono',monospace" }}><Flame size={12} /> {streak}</span>
+          <span className="flex items-center gap-1 text-[11px]" style={{ color: COLORS.textMuted, fontFamily: "'IBM Plex Mono',monospace" }}><Trophy size={12} /> {longest}</span>
+          <span className="flex items-center gap-1 text-[11px]" style={{ color: COLORS.textMuted, fontFamily: "'IBM Plex Mono',monospace" }}><CalendarDays size={12} /> {total}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AddHabitModal({ onClose, onAdd }) {
+  const [name, setName] = useState("");
+  const [color, setColor] = useState(PALETTE[0].key);
+  return (
+    <div className="fixed inset-0 flex items-end sm:items-center justify-center p-4 z-50" style={{ background: "rgba(10,8,5,0.7)" }} onClick={onClose}>
+      <div className="w-full max-w-sm rounded-2xl p-5" style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}` }} onClick={(e) => e.stopPropagation()}>
+        <h2 className="text-lg mb-3" style={{ color: COLORS.textPrimary, fontFamily: "'Fraunces',serif", fontWeight: 600 }}>Plant a habit</h2>
+        <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="What will you grow?"
+          className="w-full rounded-xl px-3.5 py-2.5 text-sm outline-none mb-3"
+          style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.textPrimary }} />
+        <div className="flex flex-wrap gap-1.5 mb-4">
+          {SUGGESTIONS.map((s) => (
+            <button key={s} onClick={() => setName(s)} className="text-[11px] px-2.5 py-1 rounded-full"
+              style={{ background: COLORS.surfaceHover, color: COLORS.textMuted, border: `1px solid ${COLORS.border}` }}>{s}</button>
+          ))}
+        </div>
+        <div className="flex items-center gap-2 mb-5">
+          {PALETTE.map((p) => (
+            <button key={p.key} onClick={() => setColor(p.key)} className="rounded-full"
+              style={{ width: 26, height: 26, background: p.hex, boxShadow: color === p.key ? `0 0 0 2px ${COLORS.surface}, 0 0 0 4px ${p.hex}` : "none" }} />
+          ))}
+        </div>
+        <div className="flex gap-2">
+          <button onClick={onClose} className="flex-1 rounded-xl py-2.5 text-sm" style={{ color: COLORS.textMuted, border: `1px solid ${COLORS.border}` }}>Cancel</button>
+          <button onClick={() => name.trim() && onAdd(name.trim(), color)} disabled={!name.trim()}
+            className="flex-1 rounded-xl py-2.5 text-sm font-medium disabled:opacity-40" style={{ background: accentFor(color), color: COLORS.bg }}>Plant it</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function Dashboard() {
+  const [user, setUser] = useState(null);
+  const [isPro, setIsPro] = useState(false);
+  const [habits, setHabits] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+  const [showUpgrade, setShowUpgrade] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        window.location.href = "/login";
+        return;
+      }
+      setUser(session.user);
+
+      const { data: profile } = await supabase.from("profiles").select("is_pro").eq("id", session.user.id).single();
+      setIsPro(!!profile?.is_pro);
+
+      const { data: habitRows } = await supabase.from("habits").select("*").eq("user_id", session.user.id).order("created_at");
+      const { data: checkinRows } = await supabase.from("checkins").select("*").eq("user_id", session.user.id);
+
+      const grouped = (habitRows || []).map((h) => ({
+        ...h,
+        checkinSet: new Set((checkinRows || []).filter((c) => c.habit_id === h.id).map((c) => c.date)),
+      }));
+      setHabits(grouped);
+      setLoaded(true);
+    })();
+  }, []);
+
+  const toggleToday = async (habit) => {
+    const today = todayISO();
+    const checked = habit.checkinSet.has(today);
+    setHabits((prev) => prev.map((h) => {
+      if (h.id !== habit.id) return h;
+      const next = new Set(h.checkinSet);
+      checked ? next.delete(today) : next.add(today);
+      return { ...h, checkinSet: next };
+    }));
+    if (checked) {
+      await supabase.from("checkins").delete().eq("habit_id", habit.id).eq("date", today);
+    } else {
+      await supabase.from("checkins").insert({ habit_id: habit.id, user_id: user.id, date: today });
+    }
+  };
+
+  const addHabit = async (name, color) => {
+    if (!isPro && habits.length >= FREE_HABIT_LIMIT) {
+      setShowAdd(false);
+      setShowUpgrade(true);
+      return;
+    }
+    const { data, error } = await supabase.from("habits").insert({ user_id: user.id, name, color }).select().single();
+    if (!error) setHabits((prev) => [...prev, { ...data, checkinSet: new Set() }]);
+    setShowAdd(false);
+  };
+
+  const deleteHabit = async (id) => {
+    setHabits((prev) => prev.filter((h) => h.id !== id));
+    await supabase.from("habits").delete().eq("id", id);
+  };
+
+  const startCheckout = async () => {
+    const res = await fetch("/api/checkout", { method: "POST", body: JSON.stringify({ userId: user.id }) });
+    const { url } = await res.json();
+    if (url) window.location.href = url;
+  };
+
+  const dateLabel = new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+
+  return (
+    <div className="min-h-screen w-full flex justify-center" style={{ background: COLORS.bg }}>
+      <div className="w-full max-w-md px-4 pt-8 pb-24">
+        <div className="flex items-end justify-between mb-1">
+          <h1 style={{ color: COLORS.textPrimary, fontFamily: "'Fraunces',serif", fontWeight: 600 }} className="text-3xl">Grove</h1>
+          <span className="text-[11px]" style={{ color: COLORS.textFaint, fontFamily: "'IBM Plex Mono',monospace" }}>{dateLabel}</span>
+        </div>
+        <p className="text-[13px] mb-5" style={{ color: COLORS.textMuted }}>
+          Each day checked adds a ring. Momentum grows warmer the longer a streak holds.
+        </p>
+
+        <button onClick={() => setShowAdd(true)} className="w-full rounded-2xl py-3 mb-2 flex items-center justify-center gap-2 text-sm"
+          style={{ border: `1.5px dashed ${COLORS.border}`, color: COLORS.textMuted }}>
+          <Plus size={16} /> Plant a new habit
+        </button>
+        {!isPro && (
+          <p className="text-center text-[11px] mb-5" style={{ color: COLORS.textFaint }}>
+            {habits.length}/{FREE_HABIT_LIMIT} free habits used — <button onClick={() => setShowUpgrade(true)} className="underline">go Pro</button> for unlimited
+          </p>
+        )}
+
+        {!loaded ? (
+          <div className="text-center py-16 text-sm" style={{ color: COLORS.textFaint }}>Loading your grove…</div>
+        ) : habits.length === 0 ? (
+          <div className="text-center py-16">
+            <div className="mx-auto mb-4 rounded-full" style={{ width: 70, height: 70, border: `1.5px dashed ${COLORS.border}` }} />
+            <p style={{ color: COLORS.textMuted }} className="text-sm">Nothing planted yet. Add your first habit above.</p>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-3">
+            {habits.map((h) => <HabitCard key={h.id} habit={h} onToggleToday={toggleToday} onDelete={deleteHabit} />)}
+          </div>
+        )}
+      </div>
+
+      {showAdd && <AddHabitModal onClose={() => setShowAdd(false)} onAdd={addHabit} />}
+      {showUpgrade && (
+        <div className="fixed inset-0 flex items-center justify-center p-4 z-50" style={{ background: "rgba(10,8,5,0.7)" }} onClick={() => setShowUpgrade(false)}>
+          <div className="w-full max-w-sm rounded-2xl p-5 text-center" style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}` }} onClick={(e) => e.stopPropagation()}>
+            <h2 className="text-lg mb-2" style={{ color: COLORS.textPrimary, fontFamily: "'Fraunces',serif", fontWeight: 600 }}>Go Pro</h2>
+            <p className="text-sm mb-5" style={{ color: COLORS.textMuted }}>Unlimited habits, one-time payment.</p>
+            <button onClick={startCheckout} className="w-full rounded-xl py-2.5 text-sm font-medium" style={{ background: "#E0A452", color: COLORS.bg }}>Upgrade — $9</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+                  }
